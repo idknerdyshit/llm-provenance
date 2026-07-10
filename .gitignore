@@ -1,0 +1,15 @@
+/target/
+**/*.rs.bk
+*.profraw
+*.profdata
+*.lcov
+coverage/
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
