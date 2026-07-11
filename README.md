@@ -6,7 +6,51 @@ of their context and classifier schemas; this crate supplies typed envelopes,
 RFC 8785 canonicalization, SHA-256 digests, and generation metadata.
 
 The crate is synchronous and pure. It has no HTTP client, async runtime,
-database, provider SDK, tracing subscriber, or application-specific schema.
+database, provider SDK, or application-specific schema. It emits optional
+`tracing` events but never installs a subscriber; consuming applications own
+subscriber setup and filtering.
+
+## Observability
+
+The `tracing` feature is enabled by default. Context operations emit structured
+redacted events to the `llm_provenance::trace` target. Intent envelopes are
+inert data structures, so callers explicitly invoke `emit_trace()` when they
+want an intent request or response event.
+
+Applications configure one app-wide subscriber. No subscriber is required
+specifically for this crate:
+
+```rust,no_run
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+tracing_subscriber::registry()
+    .with(EnvFilter::new(
+        "info,llm_provenance::trace=debug",
+    ))
+    .with(tracing_subscriber::fmt::layer())
+    .init();
+```
+
+Normal events contain operation outcomes, elapsed time, schema versions,
+opaque digest references, token accounting, cache state, and presence flags.
+They do not contain context or intent payloads, canonical preimages, raw
+application identifiers, or full error strings.
+
+The non-default `sensitive-diagnostics` feature enables an explicit local
+debugging escape hatch. It implies `tracing`, but raw events are still emitted
+only when an operation receives `TraceOptions::with_sensitive_tracing()` or a
+matching convenience method:
+
+```text
+llm-provenance = { version = "0.1", features = ["sensitive-diagnostics"] }
+
+let digest = context.digest_with_sensitive_tracing()?;
+request.emit_sensitive_trace()?;
+```
+
+Sensitive events are sent to `llm_provenance::sensitive` and may include
+canonical context JSON, full serialized intent envelopes, and detailed
+serialization errors. Never enable this target with a production log sink.
 
 ## Typed context hashing
 
@@ -153,4 +197,3 @@ sha256:rfc8785:<schema>:<schema-version>:<64 lowercase hex characters>
 
 The minimum supported Rust version is 1.88. The project is dual licensed under
 MIT or Apache-2.0 at your option.
-

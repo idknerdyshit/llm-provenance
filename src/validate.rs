@@ -1,331 +1,351 @@
-//! Fail-closed validation of the I-JSON number subset used by RFC 8785.
+//! Fail-closed serialization into the I-JSON number subset used by RFC 8785.
 
 use serde::Serialize;
 use serde::ser::{
-    SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
-    SerializeTupleStruct, SerializeTupleVariant, Serializer,
+    Error as _, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant,
+    SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
 
 use crate::{Error, Result};
 
 const MAX_SAFE_INTEGER: i128 = 9_007_199_254_740_991;
+const NUMBER_ERROR_PREFIX: &str = "llm-provenance invalid I-JSON number: ";
 
-pub(crate) fn validate_i_json<T: Serialize + ?Sized>(value: &T) -> Result<()> {
-    value
-        .serialize(NumberValidator)
-        .map_err(|error| Error::InvalidIJsonNumber(error.to_string()))
+pub(crate) fn to_i_json_value<T: Serialize + ?Sized>(value: &T) -> Result<serde_json::Value> {
+    serde_json::to_value(Validated(value)).map_err(|error| {
+        let message = error.to_string();
+        if let Some(reason) = message.strip_prefix(NUMBER_ERROR_PREFIX) {
+            Error::InvalidIJsonNumber(reason.to_owned())
+        } else {
+            Error::Serialization(message)
+        }
+    })
 }
 
-#[derive(Debug)]
-struct ValidationError(String);
+struct Validated<'a, T: ?Sized>(&'a T);
 
-impl std::fmt::Display for ValidationError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
+impl<T: Serialize + ?Sized> Serialize for Validated<'_, T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.0.serialize(ValidatingSerializer(serializer))
     }
 }
 
-impl std::error::Error for ValidationError {}
+struct ValidatingSerializer<S>(S);
 
-impl serde::ser::Error for ValidationError {
-    fn custom<T: std::fmt::Display>(message: T) -> Self {
-        Self(message.to_string())
-    }
-}
-
-#[derive(Clone, Copy)]
-struct NumberValidator;
-
-impl NumberValidator {
-    fn signed(value: i128) -> std::result::Result<(), ValidationError> {
+impl<S: Serializer> ValidatingSerializer<S> {
+    fn signed(value: i128) -> std::result::Result<(), S::Error> {
         if (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value) {
             Ok(())
         } else {
-            Err(ValidationError(format!(
-                "integer {value} exceeds the interoperable range ±(2^53-1)"
+            Err(S::Error::custom(format!(
+                "{NUMBER_ERROR_PREFIX}integer {value} exceeds the interoperable range ±(2^53-1)"
             )))
         }
     }
 
-    fn unsigned(value: u128) -> std::result::Result<(), ValidationError> {
+    fn unsigned(value: u128) -> std::result::Result<(), S::Error> {
         if value <= MAX_SAFE_INTEGER as u128 {
             Ok(())
         } else {
-            Err(ValidationError(format!(
-                "integer {value} exceeds the interoperable range ±(2^53-1)"
+            Err(S::Error::custom(format!(
+                "{NUMBER_ERROR_PREFIX}integer {value} exceeds the interoperable range ±(2^53-1)"
             )))
         }
     }
 
-    fn float(value: f64) -> std::result::Result<(), ValidationError> {
+    fn float(value: f64) -> std::result::Result<(), S::Error> {
         if value.is_finite() {
             Ok(())
         } else {
-            Err(ValidationError(
-                "NaN and infinite floating-point values are not valid I-JSON".to_owned(),
-            ))
+            Err(S::Error::custom(format!(
+                "{NUMBER_ERROR_PREFIX}NaN and infinite floating-point values are not valid I-JSON"
+            )))
         }
     }
 }
 
-impl Serializer for NumberValidator {
-    type Ok = ();
-    type Error = ValidationError;
-    type SerializeSeq = Self;
-    type SerializeTuple = Self;
-    type SerializeTupleStruct = Self;
-    type SerializeTupleVariant = Self;
-    type SerializeMap = Self;
-    type SerializeStruct = Self;
-    type SerializeStructVariant = Self;
+impl<S: Serializer> Serializer for ValidatingSerializer<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+    type SerializeSeq = ValidatingCompound<S::SerializeSeq>;
+    type SerializeTuple = ValidatingCompound<S::SerializeTuple>;
+    type SerializeTupleStruct = ValidatingCompound<S::SerializeTupleStruct>;
+    type SerializeTupleVariant = ValidatingCompound<S::SerializeTupleVariant>;
+    type SerializeMap = ValidatingCompound<S::SerializeMap>;
+    type SerializeStruct = ValidatingCompound<S::SerializeStruct>;
+    type SerializeStructVariant = ValidatingCompound<S::SerializeStructVariant>;
 
-    fn serialize_bool(self, _: bool) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn serialize_bool(self, value: bool) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.serialize_bool(value)
     }
-    fn serialize_i8(self, value: i8) -> std::result::Result<(), Self::Error> {
-        Self::signed(value.into())
+    fn serialize_i8(self, value: i8) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::signed(value.into())?;
+        self.0.serialize_i8(value)
     }
-    fn serialize_i16(self, value: i16) -> std::result::Result<(), Self::Error> {
-        Self::signed(value.into())
+    fn serialize_i16(self, value: i16) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::signed(value.into())?;
+        self.0.serialize_i16(value)
     }
-    fn serialize_i32(self, value: i32) -> std::result::Result<(), Self::Error> {
-        Self::signed(value.into())
+    fn serialize_i32(self, value: i32) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::signed(value.into())?;
+        self.0.serialize_i32(value)
     }
-    fn serialize_i64(self, value: i64) -> std::result::Result<(), Self::Error> {
-        Self::signed(value.into())
+    fn serialize_i64(self, value: i64) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::signed(value.into())?;
+        self.0.serialize_i64(value)
     }
-    fn serialize_i128(self, value: i128) -> std::result::Result<(), Self::Error> {
-        Self::signed(value)
+    fn serialize_i128(self, value: i128) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::signed(value)?;
+        self.0.serialize_i128(value)
     }
-    fn serialize_u8(self, value: u8) -> std::result::Result<(), Self::Error> {
-        Self::unsigned(value.into())
+    fn serialize_u8(self, value: u8) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::unsigned(value.into())?;
+        self.0.serialize_u8(value)
     }
-    fn serialize_u16(self, value: u16) -> std::result::Result<(), Self::Error> {
-        Self::unsigned(value.into())
+    fn serialize_u16(self, value: u16) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::unsigned(value.into())?;
+        self.0.serialize_u16(value)
     }
-    fn serialize_u32(self, value: u32) -> std::result::Result<(), Self::Error> {
-        Self::unsigned(value.into())
+    fn serialize_u32(self, value: u32) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::unsigned(value.into())?;
+        self.0.serialize_u32(value)
     }
-    fn serialize_u64(self, value: u64) -> std::result::Result<(), Self::Error> {
-        Self::unsigned(value.into())
+    fn serialize_u64(self, value: u64) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::unsigned(value.into())?;
+        self.0.serialize_u64(value)
     }
-    fn serialize_u128(self, value: u128) -> std::result::Result<(), Self::Error> {
-        Self::unsigned(value)
+    fn serialize_u128(self, value: u128) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::unsigned(value)?;
+        self.0.serialize_u128(value)
     }
-    fn serialize_f32(self, value: f32) -> std::result::Result<(), Self::Error> {
-        Self::float(value.into())
+    fn serialize_f32(self, value: f32) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::float(value.into())?;
+        self.0.serialize_f32(value)
     }
-    fn serialize_f64(self, value: f64) -> std::result::Result<(), Self::Error> {
-        Self::float(value)
+    fn serialize_f64(self, value: f64) -> std::result::Result<Self::Ok, Self::Error> {
+        Self::float(value)?;
+        self.0.serialize_f64(value)
     }
-    fn serialize_char(self, _: char) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn serialize_char(self, value: char) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.serialize_char(value)
     }
-    fn serialize_str(self, _: &str) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn serialize_str(self, value: &str) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.serialize_str(value)
     }
-    fn serialize_bytes(self, _: &[u8]) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn serialize_bytes(self, value: &[u8]) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.serialize_bytes(value)
     }
-    fn serialize_none(self) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn serialize_none(self) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.serialize_none()
     }
     fn serialize_some<T: Serialize + ?Sized>(
         self,
         value: &T,
-    ) -> std::result::Result<(), Self::Error> {
-        value.serialize(self)
+    ) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.serialize_some(&Validated(value))
     }
-    fn serialize_unit(self) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn serialize_unit(self) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.serialize_unit()
     }
-    fn serialize_unit_struct(self, _: &'static str) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn serialize_unit_struct(
+        self,
+        name: &'static str,
+    ) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.serialize_unit_struct(name)
     }
     fn serialize_unit_variant(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
-    ) -> std::result::Result<(), Self::Error> {
-        Ok(())
+        name: &'static str,
+        variant_index: u32,
+        variant: &'static str,
+    ) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.serialize_unit_variant(name, variant_index, variant)
     }
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
         self,
-        _: &'static str,
+        name: &'static str,
         value: &T,
-    ) -> std::result::Result<(), Self::Error> {
-        value.serialize(self)
+    ) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.serialize_newtype_struct(name, &Validated(value))
     }
     fn serialize_newtype_variant<T: Serialize + ?Sized>(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
+        name: &'static str,
+        variant_index: u32,
+        variant: &'static str,
         value: &T,
-    ) -> std::result::Result<(), Self::Error> {
-        value.serialize(self)
+    ) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0
+            .serialize_newtype_variant(name, variant_index, variant, &Validated(value))
     }
     fn serialize_seq(
         self,
-        _: Option<usize>,
+        len: Option<usize>,
     ) -> std::result::Result<Self::SerializeSeq, Self::Error> {
-        Ok(self)
+        self.0.serialize_seq(len).map(ValidatingCompound)
     }
-    fn serialize_tuple(self, _: usize) -> std::result::Result<Self::SerializeTuple, Self::Error> {
-        Ok(self)
+    fn serialize_tuple(self, len: usize) -> std::result::Result<Self::SerializeTuple, Self::Error> {
+        self.0.serialize_tuple(len).map(ValidatingCompound)
     }
     fn serialize_tuple_struct(
         self,
-        _: &'static str,
-        _: usize,
+        name: &'static str,
+        len: usize,
     ) -> std::result::Result<Self::SerializeTupleStruct, Self::Error> {
-        Ok(self)
+        self.0
+            .serialize_tuple_struct(name, len)
+            .map(ValidatingCompound)
     }
     fn serialize_tuple_variant(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
-        _: usize,
+        name: &'static str,
+        variant_index: u32,
+        variant: &'static str,
+        len: usize,
     ) -> std::result::Result<Self::SerializeTupleVariant, Self::Error> {
-        Ok(self)
+        self.0
+            .serialize_tuple_variant(name, variant_index, variant, len)
+            .map(ValidatingCompound)
     }
     fn serialize_map(
         self,
-        _: Option<usize>,
+        len: Option<usize>,
     ) -> std::result::Result<Self::SerializeMap, Self::Error> {
-        Ok(self)
+        self.0.serialize_map(len).map(ValidatingCompound)
     }
     fn serialize_struct(
         self,
-        _: &'static str,
-        _: usize,
+        name: &'static str,
+        len: usize,
     ) -> std::result::Result<Self::SerializeStruct, Self::Error> {
-        Ok(self)
+        self.0.serialize_struct(name, len).map(ValidatingCompound)
     }
     fn serialize_struct_variant(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
-        _: usize,
+        name: &'static str,
+        variant_index: u32,
+        variant: &'static str,
+        len: usize,
     ) -> std::result::Result<Self::SerializeStructVariant, Self::Error> {
-        Ok(self)
+        self.0
+            .serialize_struct_variant(name, variant_index, variant, len)
+            .map(ValidatingCompound)
     }
     fn collect_str<T: std::fmt::Display + ?Sized>(
         self,
-        _: &T,
-    ) -> std::result::Result<(), Self::Error> {
-        Ok(())
+        value: &T,
+    ) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.collect_str(value)
     }
     fn is_human_readable(&self) -> bool {
-        true
+        self.0.is_human_readable()
     }
 }
 
-impl SerializeSeq for NumberValidator {
-    type Ok = ();
-    type Error = ValidationError;
+struct ValidatingCompound<C>(C);
+
+impl<C: SerializeSeq> SerializeSeq for ValidatingCompound<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
     fn serialize_element<T: Serialize + ?Sized>(
         &mut self,
         value: &T,
     ) -> std::result::Result<(), Self::Error> {
-        value.serialize(*self)
+        self.0.serialize_element(&Validated(value))
     }
-    fn end(self) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn end(self) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.end()
     }
 }
 
-impl SerializeTuple for NumberValidator {
-    type Ok = ();
-    type Error = ValidationError;
+impl<C: SerializeTuple> SerializeTuple for ValidatingCompound<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
     fn serialize_element<T: Serialize + ?Sized>(
         &mut self,
         value: &T,
     ) -> std::result::Result<(), Self::Error> {
-        value.serialize(*self)
+        self.0.serialize_element(&Validated(value))
     }
-    fn end(self) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn end(self) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.end()
     }
 }
 
-impl SerializeTupleStruct for NumberValidator {
-    type Ok = ();
-    type Error = ValidationError;
+impl<C: SerializeTupleStruct> SerializeTupleStruct for ValidatingCompound<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
     fn serialize_field<T: Serialize + ?Sized>(
         &mut self,
         value: &T,
     ) -> std::result::Result<(), Self::Error> {
-        value.serialize(*self)
+        self.0.serialize_field(&Validated(value))
     }
-    fn end(self) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn end(self) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.end()
     }
 }
 
-impl SerializeTupleVariant for NumberValidator {
-    type Ok = ();
-    type Error = ValidationError;
+impl<C: SerializeTupleVariant> SerializeTupleVariant for ValidatingCompound<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
     fn serialize_field<T: Serialize + ?Sized>(
         &mut self,
         value: &T,
     ) -> std::result::Result<(), Self::Error> {
-        value.serialize(*self)
+        self.0.serialize_field(&Validated(value))
     }
-    fn end(self) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn end(self) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.end()
     }
 }
 
-impl SerializeMap for NumberValidator {
-    type Ok = ();
-    type Error = ValidationError;
+impl<C: SerializeMap> SerializeMap for ValidatingCompound<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
     fn serialize_key<T: Serialize + ?Sized>(
         &mut self,
         key: &T,
     ) -> std::result::Result<(), Self::Error> {
-        key.serialize(*self)
+        self.0.serialize_key(&Validated(key))
     }
     fn serialize_value<T: Serialize + ?Sized>(
         &mut self,
         value: &T,
     ) -> std::result::Result<(), Self::Error> {
-        value.serialize(*self)
+        self.0.serialize_value(&Validated(value))
     }
-    fn end(self) -> std::result::Result<(), Self::Error> {
-        Ok(())
-    }
-}
-
-impl SerializeStruct for NumberValidator {
-    type Ok = ();
-    type Error = ValidationError;
-    fn serialize_field<T: Serialize + ?Sized>(
-        &mut self,
-        _: &'static str,
-        value: &T,
-    ) -> std::result::Result<(), Self::Error> {
-        value.serialize(*self)
-    }
-    fn end(self) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn end(self) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.end()
     }
 }
 
-impl SerializeStructVariant for NumberValidator {
-    type Ok = ();
-    type Error = ValidationError;
+impl<C: SerializeStruct> SerializeStruct for ValidatingCompound<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
     fn serialize_field<T: Serialize + ?Sized>(
         &mut self,
-        _: &'static str,
+        key: &'static str,
         value: &T,
     ) -> std::result::Result<(), Self::Error> {
-        value.serialize(*self)
+        self.0.serialize_field(key, &Validated(value))
     }
-    fn end(self) -> std::result::Result<(), Self::Error> {
-        Ok(())
+    fn end(self) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.end()
+    }
+}
+
+impl<C: SerializeStructVariant> SerializeStructVariant for ValidatingCompound<C> {
+    type Ok = C::Ok;
+    type Error = C::Error;
+    fn serialize_field<T: Serialize + ?Sized>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> std::result::Result<(), Self::Error> {
+        self.0.serialize_field(key, &Validated(value))
+    }
+    fn end(self) -> std::result::Result<Self::Ok, Self::Error> {
+        self.0.end()
     }
 }

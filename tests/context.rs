@@ -1,8 +1,9 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use llm_provenance::{Context, ContextDigest, Error, SchemaId, SchemaVersion};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use serde_json::json;
 
 fn schema(value: &str) -> SchemaId {
@@ -17,6 +18,30 @@ fn version(value: u32) -> SchemaVersion {
 struct TypedPayload<'a> {
     name: &'a str,
     count: u32,
+}
+
+struct ChangesBetweenSerializations {
+    calls: Cell<u8>,
+}
+
+impl ChangesBetweenSerializations {
+    fn new() -> Self {
+        Self {
+            calls: Cell::new(0),
+        }
+    }
+}
+
+impl Serialize for ChangesBetweenSerializations {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let call = self.calls.get();
+        self.calls.set(call + 1);
+        if call == 0 {
+            serializer.serialize_u64(1)
+        } else {
+            serializer.serialize_u64(9_007_199_254_740_992)
+        }
+    }
 }
 
 #[test]
@@ -161,6 +186,29 @@ fn rejects_non_finite_and_unsafe_numbers() {
 }
 
 #[test]
+fn validation_and_json_conversion_use_one_serialization_pass() {
+    let canonical_payload = ChangesBetweenSerializations::new();
+    let canonical_context =
+        Context::new(schema("example.single-pass"), version(1), canonical_payload);
+    let canonical = String::from_utf8(
+        canonical_context
+            .canonical_bytes()
+            .expect("first serialization is safe"),
+    )
+    .expect("UTF-8 JSON");
+    assert!(canonical.contains(r#""payload":1"#));
+    assert_eq!(canonical_context.payload().calls.get(), 1);
+
+    let dynamic_payload = ChangesBetweenSerializations::new();
+    let dynamic_context = Context::new(schema("example.single-pass"), version(1), dynamic_payload);
+    let dynamic = dynamic_context
+        .to_dynamic()
+        .expect("first serialization is safe");
+    assert_eq!(dynamic.payload(), &json!(1));
+    assert_eq!(dynamic_context.payload().calls.get(), 1);
+}
+
+#[test]
 fn rfc_8785_number_string_and_property_order_vector() {
     let value = json!({
         "numbers": [333_333_333.333_333_3_f64, 1E30_f64, 4.50_f64, 2e-3_f64, 1e-27_f64],
@@ -200,6 +248,12 @@ fn digest_text_and_json_round_trip_strictly() {
     ] {
         assert!(ContextDigest::from_str(invalid).is_err(), "{invalid}");
     }
+
+    let (prefix, hexadecimal) = text.rsplit_once(':').expect("digest delimiter");
+    let uppercase_hex = format!("{prefix}:{}", hexadecimal.to_uppercase());
+    assert!(ContextDigest::from_str(&uppercase_hex).is_err());
+    assert!(ContextDigest::from_str(&text.replacen(":7:", ":07:", 1)).is_err());
+    assert!(ContextDigest::from_str(&text.replacen(":7:", ":+7:", 1)).is_err());
 
     let unsupported = json.replace("sha256", "future-hash");
     assert!(serde_json::from_str::<ContextDigest>(&unsupported).is_err());

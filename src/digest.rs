@@ -110,12 +110,22 @@ impl FromStr for ContextDigest {
         }
         let schema = SchemaId::new(schema.unwrap_or_default())
             .map_err(|_| Error::InvalidDigest(value.to_owned()))?;
-        let version = version
-            .and_then(|raw| raw.parse::<u32>().ok())
+        let raw_version = version.unwrap_or_default();
+        let version = raw_version
+            .parse::<u32>()
+            .ok()
+            .filter(|parsed| parsed.to_string() == raw_version)
             .and_then(|raw| SchemaVersion::new(raw).ok())
             .ok_or_else(|| Error::InvalidDigest(value.to_owned()))?;
-        let bytes = hex::decode(digest.unwrap_or_default())
-            .map_err(|_| Error::InvalidDigest(value.to_owned()))?;
+        let raw_digest = digest.unwrap_or_default();
+        if raw_digest.len() != 64
+            || !raw_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(Error::InvalidDigest(value.to_owned()));
+        }
+        let bytes = hex::decode(raw_digest).map_err(|_| Error::InvalidDigest(value.to_owned()))?;
         let digest: [u8; 32] = bytes
             .try_into()
             .map_err(|_| Error::InvalidDigest(value.to_owned()))?;

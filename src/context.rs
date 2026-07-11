@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::digest::ContextDigest;
-use crate::validate::validate_i_json;
+use crate::validate::to_i_json_value;
 use crate::{Error, Result};
 
 /// Domain separator included in every context hash preimage.
@@ -151,22 +151,135 @@ impl<T> Context<T> {
 impl<T: Serialize> Context<T> {
     /// Return the exact RFC 8785 bytes used as the SHA-256 preimage.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        #[cfg(feature = "tracing")]
+        {
+            self.canonical_bytes_with_options(crate::trace::TraceOptions::default())
+        }
+        #[cfg(not(feature = "tracing"))]
+        {
+            self.canonical_bytes_impl()
+        }
+    }
+
+    /// Return the canonical bytes while applying the requested tracing mode.
+    #[cfg(feature = "tracing")]
+    pub fn canonical_bytes_with_options(
+        &self,
+        options: crate::trace::TraceOptions,
+    ) -> Result<Vec<u8>> {
+        let trace = crate::trace::OperationTrace::new(
+            "context.canonical_bytes",
+            Some(self.schema_version.get()),
+            options.is_sensitive(),
+        );
+        let metadata = crate::trace::EventMetadata {
+            schema_version: Some(self.schema_version.get()),
+            ..Default::default()
+        };
+        let _entered = trace.enter();
+        match self.canonical_bytes_impl() {
+            Ok(bytes) => {
+                let raw_json = options
+                    .is_sensitive()
+                    .then(|| String::from_utf8_lossy(&bytes).into_owned());
+                trace.success(&metadata, raw_json.as_deref());
+                Ok(bytes)
+            }
+            Err(error) => {
+                trace.failure(&metadata, &error);
+                Err(error)
+            }
+        }
+    }
+
+    /// Return the canonical bytes and emit them to the sensitive tracing
+    /// target. This is intended only for local protocol debugging.
+    #[cfg(feature = "sensitive-diagnostics")]
+    pub fn canonical_bytes_with_sensitive_tracing(&self) -> Result<Vec<u8>> {
+        self.canonical_bytes_with_options(
+            crate::trace::TraceOptions::new().with_sensitive_tracing(),
+        )
+    }
+
+    fn canonical_bytes_impl(&self) -> Result<Vec<u8>> {
         let envelope = DigestEnvelope {
             domain: CONTEXT_DIGEST_DOMAIN,
             schema: self.schema.as_str(),
             schema_version: self.schema_version.get(),
             payload: &self.payload,
         };
-        validate_i_json(&envelope)?;
-        let value = serde_json::to_value(&envelope)
-            .map_err(|error| Error::Serialization(error.to_string()))?;
+        let value = to_i_json_value(&envelope)?;
         serde_json_canonicalizer::to_vec(&value)
             .map_err(|error| Error::Serialization(error.to_string()))
     }
 
     /// Compute a structured SHA-256 digest over the canonical context envelope.
     pub fn digest(&self) -> Result<ContextDigest> {
-        let bytes = self.canonical_bytes()?;
+        #[cfg(feature = "tracing")]
+        {
+            self.digest_with_options(crate::trace::TraceOptions::default())
+        }
+        #[cfg(not(feature = "tracing"))]
+        {
+            self.digest_impl()
+        }
+    }
+
+    /// Compute a structured SHA-256 digest while applying the requested
+    /// tracing mode.
+    #[cfg(feature = "tracing")]
+    pub fn digest_with_options(
+        &self,
+        options: crate::trace::TraceOptions,
+    ) -> Result<ContextDigest> {
+        let trace = crate::trace::OperationTrace::new(
+            "context.digest",
+            Some(self.schema_version.get()),
+            options.is_sensitive(),
+        );
+        let metadata = crate::trace::EventMetadata {
+            schema_version: Some(self.schema_version.get()),
+            ..Default::default()
+        };
+        let _entered = trace.enter();
+        let result = self.canonical_bytes_impl().map(|bytes| {
+            let raw_json = options
+                .is_sensitive()
+                .then(|| String::from_utf8_lossy(&bytes).into_owned());
+            let digest: [u8; 32] = Sha256::digest(bytes).into();
+            (digest, raw_json)
+        });
+        match result {
+            Ok((digest, raw_json)) => {
+                let digest_hex = hex::encode(digest);
+                let metadata = crate::trace::EventMetadata {
+                    digest_hex: Some(&digest_hex),
+                    ..metadata
+                };
+                trace.success(&metadata, raw_json.as_deref());
+                Ok(ContextDigest::from_parts(
+                    self.schema.clone(),
+                    self.schema_version,
+                    digest,
+                ))
+            }
+            Err(error) => {
+                trace.failure(&metadata, &error);
+                Err(error)
+            }
+        }
+    }
+
+    /// Compute a digest and emit the canonical context JSON to the sensitive
+    /// tracing target. This is intended only for local protocol debugging.
+    #[cfg(feature = "sensitive-diagnostics")]
+    pub fn digest_with_sensitive_tracing(&self) -> Result<ContextDigest> {
+        self.digest_with_options(crate::trace::TraceOptions::new().with_sensitive_tracing())
+    }
+
+    #[cfg(not(feature = "tracing"))]
+    fn digest_impl(&self) -> Result<ContextDigest> {
+        let bytes = self.canonical_bytes_impl()?;
         let digest: [u8; 32] = Sha256::digest(bytes).into();
         Ok(ContextDigest::from_parts(
             self.schema.clone(),
@@ -177,14 +290,70 @@ impl<T: Serialize> Context<T> {
 
     /// Convert a typed context into a dynamic JSON context.
     pub fn to_dynamic(&self) -> Result<DynamicContext> {
-        validate_i_json(&self.payload)?;
-        let payload = serde_json::to_value(&self.payload)
-            .map_err(|error| Error::Serialization(error.to_string()))?;
+        #[cfg(feature = "tracing")]
+        {
+            self.to_dynamic_with_options(crate::trace::TraceOptions::default())
+        }
+        #[cfg(not(feature = "tracing"))]
+        {
+            self.to_dynamic_impl()
+        }
+    }
+
+    /// Convert a typed context into a dynamic JSON context while applying the
+    /// requested tracing mode.
+    #[cfg(feature = "tracing")]
+    pub fn to_dynamic_with_options(
+        &self,
+        options: crate::trace::TraceOptions,
+    ) -> Result<DynamicContext> {
+        let trace = crate::trace::OperationTrace::new(
+            "context.to_dynamic",
+            Some(self.schema_version.get()),
+            options.is_sensitive(),
+        );
+        let metadata = crate::trace::EventMetadata {
+            schema_version: Some(self.schema_version.get()),
+            ..Default::default()
+        };
+        let _entered = trace.enter();
+        match self.to_dynamic_payload() {
+            Ok(payload) => {
+                let raw_json = options
+                    .is_sensitive()
+                    .then(|| serde_json::to_string(&payload).ok())
+                    .flatten();
+                let context = Context::new(self.schema.clone(), self.schema_version, payload);
+                trace.success(&metadata, raw_json.as_deref());
+                Ok(context)
+            }
+            Err(error) => {
+                trace.failure(&metadata, &error);
+                Err(error)
+            }
+        }
+    }
+
+    /// Convert a context and emit its dynamic payload to the sensitive
+    /// tracing target. This is intended only for local protocol debugging.
+    #[cfg(feature = "sensitive-diagnostics")]
+    pub fn to_dynamic_with_sensitive_tracing(&self) -> Result<DynamicContext> {
+        self.to_dynamic_with_options(crate::trace::TraceOptions::new().with_sensitive_tracing())
+    }
+
+    #[cfg(not(feature = "tracing"))]
+    fn to_dynamic_impl(&self) -> Result<DynamicContext> {
+        let payload = self.to_dynamic_payload()?;
         Ok(Context::new(
             self.schema.clone(),
             self.schema_version,
             payload,
         ))
+    }
+
+    fn to_dynamic_payload(&self) -> Result<serde_json::Value> {
+        let payload = to_i_json_value(&self.payload)?;
+        Ok(payload)
     }
 }
 
@@ -192,9 +361,74 @@ impl Context<serde_json::Value> {
     /// Deserialize a dynamic payload into an application-defined type while
     /// preserving the schema identifier and version.
     pub fn try_into_typed<T: DeserializeOwned>(self) -> Result<Context<T>> {
-        let payload = serde_json::from_value(self.payload)
+        #[cfg(feature = "tracing")]
+        {
+            self.try_into_typed_with_options(crate::trace::TraceOptions::default())
+        }
+        #[cfg(not(feature = "tracing"))]
+        {
+            self.try_into_typed_impl()
+        }
+    }
+
+    /// Deserialize a dynamic context while applying the requested tracing
+    /// mode.
+    #[cfg(feature = "tracing")]
+    pub fn try_into_typed_with_options<T: DeserializeOwned>(
+        self,
+        options: crate::trace::TraceOptions,
+    ) -> Result<Context<T>> {
+        let Context {
+            schema,
+            schema_version,
+            payload,
+        } = self;
+        let trace = crate::trace::OperationTrace::new(
+            "context.try_into_typed",
+            Some(schema_version.get()),
+            options.is_sensitive(),
+        );
+        let metadata = crate::trace::EventMetadata {
+            schema_version: Some(schema_version.get()),
+            ..Default::default()
+        };
+        let _entered = trace.enter();
+        let raw_json = options
+            .is_sensitive()
+            .then(|| serde_json::to_string(&payload).ok())
+            .flatten();
+        let result = serde_json::from_value(payload)
+            .map_err(|error| Error::Serialization(error.to_string()))
+            .map(|payload| Context::new(schema, schema_version, payload));
+        match result {
+            Ok(context) => {
+                trace.success(&metadata, raw_json.as_deref());
+                Ok(context)
+            }
+            Err(error) => {
+                trace.failure(&metadata, &error);
+                Err(error)
+            }
+        }
+    }
+
+    /// Deserialize a dynamic context and emit its payload to the sensitive
+    /// tracing target. This is intended only for local protocol debugging.
+    #[cfg(feature = "sensitive-diagnostics")]
+    pub fn try_into_typed_with_sensitive_tracing<T: DeserializeOwned>(self) -> Result<Context<T>> {
+        self.try_into_typed_with_options(crate::trace::TraceOptions::new().with_sensitive_tracing())
+    }
+
+    #[cfg(not(feature = "tracing"))]
+    fn try_into_typed_impl<T: DeserializeOwned>(self) -> Result<Context<T>> {
+        let Context {
+            schema,
+            schema_version,
+            payload,
+        } = self;
+        let payload = serde_json::from_value(payload)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        Ok(Context::new(self.schema, self.schema_version, payload))
+        Ok(Context::new(schema, schema_version, payload))
     }
 }
 

@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{ContextDigest, GenerationProvenance, VersionedPrompt};
+#[cfg(feature = "tracing")]
+use crate::{Error, Result};
 
 /// Typed request for an intent-classification operation.
 ///
@@ -38,3 +40,110 @@ pub type DynamicIntentRequest = IntentRequest<serde_json::Value>;
 
 /// Dynamically typed JSON intent response.
 pub type DynamicIntentResponse = IntentResponse<serde_json::Value>;
+
+#[cfg(feature = "tracing")]
+impl<T: Serialize> IntentRequest<T> {
+    /// Emit a redacted structured tracing event for this request envelope.
+    ///
+    /// Intent envelopes are inert data structures, so tracing is explicit and
+    /// does not run during construction or serde serialization.
+    pub fn emit_trace(&self) -> Result<()> {
+        self.emit_trace_with_options(crate::trace::TraceOptions::default())
+    }
+
+    /// Emit a structured tracing event using the requested tracing mode.
+    pub fn emit_trace_with_options(&self, options: crate::trace::TraceOptions) -> Result<()> {
+        let digest_hex = self.context.hex();
+        let metadata = crate::trace::EventMetadata {
+            schema_version: Some(self.context.schema_version().get()),
+            digest_hex: Some(&digest_hex),
+            prompt_version: Some(self.prompt.version()),
+            model_present: Some(!self.model.is_empty()),
+            ..Default::default()
+        };
+        let trace = crate::trace::OperationTrace::new(
+            "intent.request.emit",
+            Some(self.context.schema_version().get()),
+            options.is_sensitive(),
+        );
+        let _entered = trace.enter();
+        let raw_json = if options.is_sensitive() {
+            match serde_json::to_string(self) {
+                Ok(raw_json) => Some(raw_json),
+                Err(error) => {
+                    let error = Error::Serialization(error.to_string());
+                    trace.failure(&metadata, &error);
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+        trace.success(&metadata, raw_json.as_deref());
+        Ok(())
+    }
+
+    /// Emit this request envelope to the sensitive tracing target.
+    ///
+    /// This is intended only for local protocol debugging.
+    #[cfg(feature = "sensitive-diagnostics")]
+    pub fn emit_sensitive_trace(&self) -> Result<()> {
+        self.emit_trace_with_options(crate::trace::TraceOptions::new().with_sensitive_tracing())
+    }
+}
+
+#[cfg(feature = "tracing")]
+impl<T: Serialize> IntentResponse<T> {
+    /// Emit a redacted structured tracing event for this response envelope.
+    ///
+    /// Intent envelopes are inert data structures, so tracing is explicit and
+    /// does not run during construction or serde serialization.
+    pub fn emit_trace(&self) -> Result<()> {
+        self.emit_trace_with_options(crate::trace::TraceOptions::default())
+    }
+
+    /// Emit a structured tracing event using the requested tracing mode.
+    pub fn emit_trace_with_options(&self, options: crate::trace::TraceOptions) -> Result<()> {
+        let digest_hex = self.provenance.context.hex();
+        let metadata = crate::trace::EventMetadata {
+            schema_version: Some(self.provenance.context.schema_version().get()),
+            digest_hex: Some(&digest_hex),
+            prompt_version: Some(self.provenance.prompt.version()),
+            context_changed: Some(self.provenance.context_changed()),
+            cache_hit: Some(self.provenance.cache.hit),
+            input_tokens: self.provenance.usage.input_tokens,
+            output_tokens: self.provenance.usage.output_tokens,
+            model_present: Some(!self.provenance.model.is_empty()),
+            provider_generation_id_present: Some(self.provenance.provider_generation_id.is_some()),
+            estimated_cost_present: Some(self.provenance.estimated_cost.is_some()),
+        };
+        let trace = crate::trace::OperationTrace::new(
+            "intent.response.emit",
+            Some(self.provenance.context.schema_version().get()),
+            options.is_sensitive(),
+        );
+        let _entered = trace.enter();
+        let raw_json = if options.is_sensitive() {
+            match serde_json::to_string(self) {
+                Ok(raw_json) => Some(raw_json),
+                Err(error) => {
+                    let error = Error::Serialization(error.to_string());
+                    trace.failure(&metadata, &error);
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+        trace.success(&metadata, raw_json.as_deref());
+        Ok(())
+    }
+
+    /// Emit this response envelope to the sensitive tracing target.
+    ///
+    /// This is intended only for local protocol debugging.
+    #[cfg(feature = "sensitive-diagnostics")]
+    pub fn emit_sensitive_trace(&self) -> Result<()> {
+        self.emit_trace_with_options(crate::trace::TraceOptions::new().with_sensitive_tracing())
+    }
+}
