@@ -117,6 +117,31 @@ pub struct Context<T> {
 /// Context whose application payload is dynamically typed JSON.
 pub type DynamicContext = Context<serde_json::Value>;
 
+/// Redacted result of comparing a rebuilt context with an expected digest.
+///
+/// This type intentionally contains only self-describing digest references.
+/// It never contains application payload values or canonical preimage bytes.
+#[derive(Clone, PartialEq, Eq)]
+pub enum ContextVerification {
+    /// The rebuilt context exactly matches the expected digest.
+    Match,
+    /// The rebuilt context is valid but does not match the expected digest.
+    Mismatch {
+        /// Digest supplied by the persisted audit record.
+        expected: ContextDigest,
+        /// Digest computed from the rebuilt context.
+        actual: ContextDigest,
+    },
+}
+
+impl ContextVerification {
+    /// Return whether verification succeeded.
+    #[must_use]
+    pub fn is_match(&self) -> bool {
+        matches!(self, Self::Match)
+    }
+}
+
 impl<T> Context<T> {
     /// Construct a context from already validated schema metadata.
     pub fn new(schema: SchemaId, schema_version: SchemaVersion, payload: T) -> Self {
@@ -223,6 +248,15 @@ impl<T: Serialize> Context<T> {
         {
             self.digest_impl()
         }
+    }
+
+    /// Recompute this context digest and compare it with persisted evidence.
+    ///
+    /// The returned result is intentionally redacted: it reports only digest
+    /// references and never includes payload values or canonical bytes.
+    pub fn verify_digest(&self, expected: &ContextDigest) -> Result<ContextVerification> {
+        let actual = self.digest()?;
+        Ok(verification(expected, actual))
     }
 
     /// Compute a structured SHA-256 digest while applying the requested
@@ -438,4 +472,52 @@ struct DigestEnvelope<'a, T> {
     schema: &'a str,
     schema_version: u32,
     payload: &'a T,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DynamicDigestEnvelope {
+    domain: String,
+    schema: SchemaId,
+    schema_version: SchemaVersion,
+    payload: serde_json::Value,
+}
+
+pub(crate) fn verify_canonical_bytes(
+    expected: &ContextDigest,
+    bytes: &[u8],
+) -> Result<ContextVerification> {
+    let envelope: DynamicDigestEnvelope =
+        serde_json::from_slice(bytes).map_err(|_| Error::InvalidCanonicalContext)?;
+    if envelope.domain != CONTEXT_DIGEST_DOMAIN {
+        return Err(Error::InvalidCanonicalContext);
+    }
+
+    let canonical_envelope = DigestEnvelope {
+        domain: CONTEXT_DIGEST_DOMAIN,
+        schema: envelope.schema.as_str(),
+        schema_version: envelope.schema_version.get(),
+        payload: &envelope.payload,
+    };
+    let value = to_i_json_value(&canonical_envelope).map_err(|_| Error::InvalidCanonicalContext)?;
+    let canonical =
+        serde_json_canonicalizer::to_vec(&value).map_err(|_| Error::InvalidCanonicalContext)?;
+    if canonical != bytes {
+        return Err(Error::InvalidCanonicalContext);
+    }
+
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    let actual = ContextDigest::from_parts(envelope.schema, envelope.schema_version, digest);
+    Ok(verification(expected, actual))
+}
+
+fn verification(expected: &ContextDigest, actual: ContextDigest) -> ContextVerification {
+    if expected == &actual {
+        ContextVerification::Match
+    } else {
+        ContextVerification::Mismatch {
+            expected: expected.clone(),
+            actual,
+        }
+    }
 }

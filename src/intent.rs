@@ -104,22 +104,26 @@ impl<T: Serialize> IntentResponse<T> {
 
     /// Emit a structured tracing event using the requested tracing mode.
     pub fn emit_trace_with_options(&self, options: crate::trace::TraceOptions) -> Result<()> {
-        let digest_hex = self.provenance.context.hex();
+        let context = self.provenance.context();
+        let usage = self.provenance.usage();
+        let digest_hex = context.hex();
         let metadata = crate::trace::EventMetadata {
-            schema_version: Some(self.provenance.context.schema_version().get()),
+            schema_version: Some(context.schema_version().get()),
             digest_hex: Some(&digest_hex),
-            prompt_version: Some(self.provenance.prompt.version()),
+            prompt_version: Some(self.provenance.prompt().identity().version()),
             context_changed: Some(self.provenance.context_changed()),
-            cache_hit: Some(self.provenance.cache.hit),
-            input_tokens: self.provenance.usage.input_tokens,
-            output_tokens: self.provenance.usage.output_tokens,
-            model_present: Some(!self.provenance.model.is_empty()),
-            provider_generation_id_present: Some(self.provenance.provider_generation_id.is_some()),
-            estimated_cost_present: Some(self.provenance.estimated_cost.is_some()),
+            cache_hit: Some(self.provenance.cache().hit()),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            model_present: Some(true),
+            provider_generation_id_present: Some(
+                self.provenance.provider_generation_id().is_some(),
+            ),
+            estimated_cost_present: Some(self.provenance.estimated_cost().is_some()),
         };
         let trace = crate::trace::OperationTrace::new(
             "intent.response.emit",
-            Some(self.provenance.context.schema_version().get()),
+            Some(context.schema_version().get()),
             options.is_sensitive(),
         );
         let _entered = trace.enter();

@@ -7,8 +7,10 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "sensitive-diagnostics")]
 use llm_provenance::TraceOptions;
 use llm_provenance::{
-    CacheProvenance, Context, GenerationProvenance, IntentRequest, IntentResponse, MonetaryCost,
-    SchemaId, SchemaVersion, TokenUsage, VersionedPrompt,
+    ArtifactDigest, ArtifactLocator, ArtifactReference, AuditTimestamp, CacheProvenance, Context,
+    ExecutionEvidence, GenerationProvenance, IntentRequest, IntentResponse, ModelIdentity,
+    MonetaryCost, PromptEvidence, RetainedGenerationArtifacts, SchemaId, SchemaVersion, TokenUsage,
+    VersionedComponent, VersionedPrompt,
 };
 use serde::ser::Error as _;
 use serde::{Serialize, Serializer};
@@ -154,23 +156,49 @@ fn context(secret: &str) -> Context<serde_json::Value> {
     )
 }
 
+fn artifact(locator: &str, bytes: impl AsRef<[u8]>) -> ArtifactReference {
+    ArtifactReference::new(
+        ArtifactLocator::new(locator).unwrap(),
+        ArtifactDigest::from_bytes(bytes),
+    )
+}
+
 fn provenance(context: llm_provenance::ContextDigest, secret: &str) -> GenerationProvenance {
-    GenerationProvenance {
-        model: format!("model-{secret}"),
-        prompt: VersionedPrompt::new(format!("prompt-{secret}"), 4).unwrap(),
+    let prompt = PromptEvidence::new(
+        VersionedPrompt::new(format!("prompt-{secret}"), 4).unwrap(),
+        artifact("archive/template", format!("template-{secret}")),
+        VersionedComponent::new("renderer", "git:1").unwrap(),
+        artifact("archive/request", format!("request-{secret}")),
+    );
+    let execution = ExecutionEvidence::new(
+        VersionedComponent::new("app", "git:2").unwrap(),
+        "operation-1",
+        1,
+        AuditTimestamp::parse_rfc3339("2026-07-11T20:30:00Z").unwrap(),
+    )
+    .unwrap();
+    GenerationProvenance::builder(
+        ModelIdentity::new("provider", format!("model-{secret}"), "revision-1").unwrap(),
+        prompt,
         context,
-        observed_context: None,
-        cache: CacheProvenance {
-            key: Some(format!("cache-{secret}")),
-            hit: true,
-        },
-        usage: TokenUsage {
-            input_tokens: Some(12),
-            output_tokens: Some(7),
-        },
-        provider_generation_id: Some(format!("generation-{secret}")),
-        estimated_cost: Some(MonetaryCost::new("0.001", "USD").unwrap()),
-    }
+        RetainedGenerationArtifacts::new(
+            artifact("archive/context", format!("context-{secret}")),
+            artifact("archive/config", format!("config-{secret}")),
+            artifact("archive/response", format!("response-{secret}")),
+            artifact("archive/output", format!("output-{secret}")),
+        ),
+        execution,
+    )
+    .cache(CacheProvenance::with_key(true, format!("cache-{secret}")).unwrap())
+    .usage(TokenUsage {
+        input_tokens: Some(12),
+        output_tokens: Some(7),
+    })
+    .provider_generation_id(format!("generation-{secret}"))
+    .unwrap()
+    .estimated_cost(MonetaryCost::new("0.001", "USD").unwrap())
+    .build()
+    .expect("provenance")
 }
 
 #[test]

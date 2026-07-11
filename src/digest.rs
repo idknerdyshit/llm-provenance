@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Result, SchemaId, SchemaVersion};
+use crate::{ContextVerification, Error, Result, SchemaId, SchemaVersion};
 
 /// Hash algorithm used for context digests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +78,15 @@ impl ContextDigest {
     pub fn hex(&self) -> String {
         hex::encode(self.digest)
     }
+
+    /// Verify that retained bytes are the exact canonical context preimage for
+    /// this digest.
+    ///
+    /// This rejects non-canonical JSON and malformed context envelopes before
+    /// comparing the resulting self-describing digest.
+    pub fn verify_canonical_bytes(&self, bytes: &[u8]) -> Result<ContextVerification> {
+        crate::context::verify_canonical_bytes(self, bytes)
+    }
 }
 
 impl std::fmt::Display for ContextDigest {
@@ -138,6 +147,7 @@ impl<'de> Deserialize<'de> for ContextDigest {
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Wire {
             schema: SchemaId,
             schema_version: SchemaVersion,

@@ -31,6 +31,27 @@ pub enum Error {
     /// A monetary value is not an exact decimal string plus ISO-style currency.
     #[error("invalid monetary cost: {0}")]
     InvalidCost(String),
+
+    /// An opaque identifier or locator is empty, too long, or contains a
+    /// control character. The rejected value is intentionally not retained.
+    #[error("invalid opaque identifier")]
+    InvalidOpaqueIdentifier,
+
+    /// A one-based generation attempt was zero.
+    #[error("generation attempt must be greater than zero")]
+    InvalidAttempt,
+
+    /// A persisted capture timestamp is not a valid RFC 3339 timestamp.
+    #[error("invalid audit timestamp")]
+    InvalidTimestamp,
+
+    /// A provenance record uses an unsupported wire-format version.
+    #[error("unsupported provenance record format version: {0}")]
+    UnsupportedProvenanceFormat(u32),
+
+    /// Stored bytes are not a valid canonical context preimage.
+    #[error("invalid canonical context preimage")]
+    InvalidCanonicalContext,
 }
 
 /// Convenience result alias for this crate.

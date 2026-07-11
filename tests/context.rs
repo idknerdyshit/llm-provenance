@@ -2,7 +2,10 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-use llm_provenance::{Context, ContextDigest, Error, SchemaId, SchemaVersion};
+use llm_provenance::{
+    ArtifactDigest, Context, ContextDigest, ContextManifest, ContextVerification, Error,
+    ManifestedPayload, SchemaId, SchemaVersion, SourceSnapshot, VersionedComponent,
+};
 use serde::{Serialize, Serializer};
 use serde_json::json;
 
@@ -257,4 +260,217 @@ fn digest_text_and_json_round_trip_strictly() {
 
     let unsupported = json.replace("sha256", "future-hash");
     assert!(serde_json::from_str::<ContextDigest>(&unsupported).is_err());
+}
+
+#[test]
+fn artifact_digest_commits_to_exact_raw_bytes() {
+    let digest = ArtifactDigest::from_bytes(b"source snapshot");
+    assert_eq!(
+        digest.to_string(),
+        "sha256:bytes:v1:ecf495d855430f121746d2f133e19e20518d429bb53176a7960bf59893c71e34"
+    );
+    assert!(digest.verify_bytes(b"source snapshot"));
+    assert!(!digest.verify_bytes(b"source snapshot\n"));
+    assert_eq!(
+        ArtifactDigest::from_str(&digest.to_string()).expect("text digest"),
+        digest
+    );
+    let json = serde_json::to_string(&digest).expect("JSON digest");
+    assert_eq!(
+        serde_json::from_str::<ArtifactDigest>(&json).expect("decoded digest"),
+        digest
+    );
+    let uppercase = digest.to_string().to_uppercase();
+    assert!(ArtifactDigest::from_str(&uppercase).is_err());
+}
+
+fn manifest(first: &str, second: &str, builder_version: &str) -> ContextManifest {
+    manifest_with(
+        vec![
+            SourceSnapshot::new(
+                "ticket-123",
+                "revision-2",
+                ArtifactDigest::from_bytes(first),
+            )
+            .expect("source one"),
+            SourceSnapshot::new("policy-4", "revision-7", ArtifactDigest::from_bytes(second))
+                .expect("source two"),
+        ],
+        b"retrieval-config-v1",
+        b"selection-config-v1",
+        builder_version,
+    )
+}
+
+fn manifest_with(
+    sources: Vec<SourceSnapshot>,
+    retrieval: &[u8],
+    selection: &[u8],
+    builder_version: &str,
+) -> ContextManifest {
+    ContextManifest::new(
+        sources,
+        ArtifactDigest::from_bytes(retrieval),
+        ArtifactDigest::from_bytes(selection),
+        VersionedComponent::new("support-context-builder", builder_version).expect("builder"),
+    )
+}
+
+fn manifested_digest(manifest: ContextManifest) -> ContextDigest {
+    Context::new(
+        schema("example.manifested"),
+        version(1),
+        ManifestedPayload::new(
+            manifest,
+            json!({"messages": ["ticket body"], "policy": "policy body"}),
+        ),
+    )
+    .digest()
+    .expect("manifest digest")
+}
+
+#[test]
+fn manifested_payload_binds_reconstruction_metadata_and_replays() {
+    let context = Context::new(
+        schema("example.manifested"),
+        version(1),
+        ManifestedPayload::new(
+            manifest("ticket body", "policy body", "git:abc"),
+            json!({"messages": ["ticket body"], "policy": "policy body"}),
+        ),
+    );
+    let digest = context.digest().expect("digest");
+    let canonical = context.canonical_bytes().expect("canonical bytes");
+    assert!(matches!(
+        context
+            .verify_digest(&digest)
+            .expect("context verification"),
+        ContextVerification::Match
+    ));
+    assert!(matches!(
+        digest
+            .verify_canonical_bytes(&canonical)
+            .expect("stored preimage verification"),
+        ContextVerification::Match
+    ));
+    let unrelated = Context::new(
+        schema("example.manifested"),
+        version(1),
+        json!({"different": true}),
+    )
+    .digest()
+    .expect("unrelated digest");
+    assert!(matches!(
+        unrelated
+            .verify_canonical_bytes(&canonical)
+            .expect("mismatched archived preimage"),
+        ContextVerification::Mismatch { .. }
+    ));
+
+    let mismatched = Context::new(
+        schema("example.manifested"),
+        version(1),
+        ManifestedPayload::new(
+            manifest("ticket body", "policy body", "git:abc"),
+            json!({"messages": ["changed"], "policy": "policy body"}),
+        ),
+    );
+    assert!(matches!(
+        mismatched.verify_digest(&digest).expect("mismatch"),
+        ContextVerification::Mismatch { .. }
+    ));
+}
+
+#[test]
+fn manifest_metadata_changes_context_digest() {
+    let digest = manifested_digest(manifest("ticket body", "policy body", "git:abc"));
+    assert_ne!(
+        digest,
+        manifested_digest(manifest("changed ticket body", "policy body", "git:abc"))
+    );
+    assert_ne!(
+        digest,
+        manifested_digest(manifest("ticket body", "policy body", "git:def"))
+    );
+
+    let source_one = SourceSnapshot::new(
+        "ticket-123",
+        "revision-2",
+        ArtifactDigest::from_bytes(b"ticket body"),
+    )
+    .expect("source one");
+    let source_two = SourceSnapshot::new(
+        "policy-4",
+        "revision-7",
+        ArtifactDigest::from_bytes(b"policy body"),
+    )
+    .expect("source two");
+    assert_ne!(
+        digest,
+        manifested_digest(manifest_with(
+            vec![source_two.clone(), source_one.clone()],
+            b"retrieval-config-v1",
+            b"selection-config-v1",
+            "git:abc",
+        ))
+    );
+    let changed_revision = SourceSnapshot::new(
+        "ticket-123",
+        "revision-3",
+        ArtifactDigest::from_bytes(b"ticket body"),
+    )
+    .expect("revised source");
+    assert_ne!(
+        digest,
+        manifested_digest(manifest_with(
+            vec![changed_revision, source_two.clone()],
+            b"retrieval-config-v1",
+            b"selection-config-v1",
+            "git:abc",
+        ))
+    );
+    assert_ne!(
+        digest,
+        manifested_digest(manifest_with(
+            vec![source_one.clone(), source_two.clone()],
+            b"retrieval-config-v2",
+            b"selection-config-v1",
+            "git:abc",
+        ))
+    );
+    assert_ne!(
+        digest,
+        manifested_digest(manifest_with(
+            vec![source_one, source_two],
+            b"retrieval-config-v1",
+            b"selection-config-v2",
+            "git:abc",
+        ))
+    );
+}
+
+#[test]
+fn archived_context_preimages_must_be_canonical() {
+    let context = Context::new(
+        schema("example.preimage"),
+        version(1),
+        json!({"b": 2, "a": 1}),
+    );
+    let digest = context.digest().expect("digest");
+    let noncanonical = br#"{"schema":"example.preimage","domain":"llm-provenance/context-digest/v1","schema_version":1,"payload":{"b":2,"a":1}}"#;
+    assert!(digest.verify_canonical_bytes(noncanonical).is_err());
+}
+
+#[test]
+fn manifested_payload_wire_format_rejects_unknown_fields() {
+    let payload = ManifestedPayload::new(
+        manifest("ticket body", "policy body", "git:abc"),
+        json!({"messages": ["ticket body"]}),
+    );
+    let mut wire = serde_json::to_value(payload).expect("wire");
+    wire.as_object_mut()
+        .expect("manifested payload object")
+        .insert("unexpected".to_owned(), json!(true));
+
+    assert!(serde_json::from_value::<ManifestedPayload<serde_json::Value>>(wire).is_err());
 }

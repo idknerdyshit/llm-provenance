@@ -2,8 +2,9 @@
 
 `llm-provenance` provides provider-neutral building blocks for reproducible LLM
 context hashes and audit-safe generation provenance. Applications keep ownership
-of their context and classifier schemas; this crate supplies typed envelopes,
-RFC 8785 canonicalization, SHA-256 digests, and generation metadata.
+of their context, evidence archive, and classifier schemas; this crate supplies
+typed envelopes, RFC 8785 canonicalization, SHA-256 commitments, replay
+verification, and versioned execution metadata.
 
 The crate is synchronous and pure. It has no HTTP client, async runtime,
 database, provider SDK, or application-specific schema. It emits optional
@@ -114,42 +115,124 @@ assert_eq!(digest.schema().as_str(), "com.example.dynamic");
 Typed contexts can be converted with `Context::to_dynamic()`. A
 `DynamicContext` can be converted back with `try_into_typed()`.
 
-## Generation provenance
+## Hash-bound reconstruction manifests
+
+For reconstructable contexts, applications wrap the resolved payload in a
+`ManifestedPayload`. The manifest binds ordered retained source snapshots,
+retrieval/selection configuration commitments, and the exact context-builder
+version into the context digest. The application retains the actual source and
+configuration bytes; this crate does no storage or retrieval.
 
 ```rust
 use llm_provenance::{
-    CacheProvenance, Context, GenerationProvenance, SchemaId, SchemaVersion,
-    TokenUsage, VersionedPrompt,
+    ArtifactDigest, Context, ContextManifest, ManifestedPayload, SchemaId,
+    SchemaVersion, SourceSnapshot, VersionedComponent,
 };
 use serde_json::json;
+
+let manifest = ContextManifest::new(
+    vec![SourceSnapshot::new(
+        "ticket-123",
+        "revision-7",
+        ArtifactDigest::from_bytes(b"retained ticket snapshot"),
+    )?],
+    ArtifactDigest::from_bytes(b"retrieval-config-v1"),
+    ArtifactDigest::from_bytes(b"selection-config-v1"),
+    VersionedComponent::new("support-context-builder", "git:abc123")?,
+);
+let context = Context::new(
+    SchemaId::new("com.example.support-context")?,
+    SchemaVersion::new(1)?,
+    ManifestedPayload::new(manifest, json!({"messages": ["Need help"]})),
+);
+
+let digest = context.digest()?;
+let canonical_preimage = context.canonical_bytes()?;
+assert!(digest.verify_canonical_bytes(&canonical_preimage)?.is_match());
+# Ok::<(), llm_provenance::Error>(())
+```
+
+`ArtifactDigest` commits to exact raw bytes using a separate domain
+(`llm-provenance/artifact-digest/v1`); it does not normalize JSON, Unicode, or
+line endings. `ArtifactReference` pairs one of those commitments with an opaque
+application-owned locator. Locators must never contain credentials.
+
+## Generation provenance and retained evidence
+
+```rust
+use llm_provenance::{
+    ArtifactDigest, ArtifactLocator, ArtifactReference, AuditTimestamp, Context,
+    ExecutionEvidence, GenerationProvenance, ModelIdentity, PromptEvidence,
+    RetainedGenerationArtifacts, SchemaId, SchemaVersion, TokenUsage,
+    VersionedComponent, VersionedPrompt,
+};
+use serde_json::json;
+
+fn evidence(locator: &str, bytes: &[u8]) -> llm_provenance::Result<ArtifactReference> {
+    Ok(ArtifactReference::new(
+        ArtifactLocator::new(locator)?,
+        ArtifactDigest::from_bytes(bytes),
+    ))
+}
 
 let context = Context::new(
     SchemaId::new("com.example.reply")?,
     SchemaVersion::new(1)?,
     json!({"conversation_revision": 8}),
 );
+let context_preimage = context.canonical_bytes()?;
+let prompt = PromptEvidence::new(
+    VersionedPrompt::new("support-reply", 4)?,
+    evidence("evidence/prompt-template", b"retained template bytes")?,
+    VersionedComponent::new("prompt-renderer", "git:abc123")?,
+    evidence("evidence/rendered-request", b"exact rendered request bytes")?,
+);
+let execution = ExecutionEvidence::new(
+    VersionedComponent::new("support-service", "git:def456")?,
+    "operation-123",
+    1,
+    AuditTimestamp::parse_rfc3339("2026-07-11T20:30:00Z")?,
+)?;
 
-let provenance = GenerationProvenance {
-    model: "provider/model".to_owned(),
-    prompt: VersionedPrompt::new("support-reply", 4)?,
-    context: context.digest()?,
-    observed_context: None,
-    cache: CacheProvenance::default(),
-    usage: TokenUsage {
+let provenance = GenerationProvenance::builder(
+    ModelIdentity::new("provider", "model", "provider-revision-2026-07")?,
+    prompt,
+    context.digest()?,
+    RetainedGenerationArtifacts::new(
+        evidence("evidence/context-preimage", &context_preimage)?,
+        evidence("evidence/decoding-config", br#"{"temperature":0}"#)?,
+        evidence("evidence/provider-response", b"raw provider response bytes")?,
+        evidence("evidence/output", b"normalized persisted output bytes")?,
+    ),
+    execution,
+)
+    .usage(TokenUsage {
         input_tokens: Some(120),
         output_tokens: Some(35),
-    },
-    provider_generation_id: Some("generation-123".to_owned()),
-    estimated_cost: None,
-};
+    })
+    .provider_generation_id("generation-123")?
+    .build()?;
 
 assert!(!provenance.context_changed());
+assert!(provenance.verify_context(&context)?.is_match());
 # Ok::<(), llm_provenance::Error>(())
 ```
 
-Provenance intentionally contains no rendered prompt, raw context, generated
-body, or provider credential. Applications should persist the provenance next
-to their own artifact and retain raw data according to their own privacy policy.
+`GenerationProvenance` is a strict `format_version: 1` record. It retains only
+opaque locators and commitments for the canonical context preimage, template,
+fully rendered request, decoding/tool/schema configuration, raw provider
+response, and normalized output. It also carries immutable model revision,
+application build, operation/attempt, and capture time. Its canonical,
+domain-separated `fingerprint()` can be signed or added to an application-owned
+append-only ledger.
+
+Applications should retain the raw evidence archive separately, with their own
+encryption, authorization, retention, deletion, legal-hold, and audited-read
+controls. During audit, resolve each reference, verify its `ArtifactDigest`,
+rebuild the `Context<ManifestedPayload<T>>`, and call
+`provenance.verify_context(&rebuilt)`. This proves the archived evidence and
+rebuilt context match the record; it does not claim a new model invocation will
+reproduce a nondeterministic output.
 
 ## Application-defined intent results
 
@@ -178,6 +261,8 @@ stay independent of an application's classifier schema. Dynamic aliases using
 - The canonical preimage is RFC 8785 JSON Canonicalization Scheme output.
 - SHA-256 is the only algorithm in version 0.1.
 - The domain separator is `llm-provenance/context-digest/v1`.
+- Raw retained artifacts use the independent
+  `llm-provenance/artifact-digest/v1` domain.
 - Values are restricted to interoperable I-JSON numbers. Integers outside
   `±(2^53−1)`, NaN, and infinities fail instead of being rounded or serialized
   as `null`.

@@ -216,5 +216,10 @@ pub(crate) fn error_kind(error: &Error) -> &'static str {
         Error::InvalidDigest(_) => "invalid_digest",
         Error::InvalidPrompt(_) => "invalid_prompt",
         Error::InvalidCost(_) => "invalid_cost",
+        Error::InvalidOpaqueIdentifier => "invalid_opaque_identifier",
+        Error::InvalidAttempt => "invalid_attempt",
+        Error::InvalidTimestamp => "invalid_timestamp",
+        Error::UnsupportedProvenanceFormat(_) => "unsupported_provenance_format",
+        Error::InvalidCanonicalContext => "invalid_canonical_context",
     }
 }
