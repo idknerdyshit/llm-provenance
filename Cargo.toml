@@ -43,9 +43,35 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unsafe_code = "deny"
 
 [lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
 panic_in_result_fn = "warn"
+panic = "warn"
 print_stderr = "warn"
 print_stdout = "warn"
+
+# High-signal restriction lints for a provider-neutral library.
+as_conversions = "warn"
+empty_drop = "warn"
+exit = "warn"
+fallible_impl_from = "warn"
+let_underscore_must_use = "warn"
+mem_forget = "warn"
+mutex_atomic = "warn"
+mutex_integer = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+string_slice = "warn"
+try_err = "warn"
+unused_result_ok = "warn"
+unwrap_in_result = "warn"
+
+# These pedantic lints are intentionally relaxed: they are either noisy for
+# this public API or produce a less readable implementation here.
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+single_match_else = "allow"

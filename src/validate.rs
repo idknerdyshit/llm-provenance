@@ -8,7 +8,7 @@ use serde::ser::{
 
 use crate::{Error, Result};
 
-const MAX_SAFE_INTEGER: i128 = 9_007_199_254_740_991;
+const MAX_SAFE_INTEGER: u128 = 9_007_199_254_740_991;
 const NUMBER_ERROR_PREFIX: &str = "llm-provenance invalid I-JSON number: ";
 
 pub(crate) fn to_i_json_value<T: Serialize + ?Sized>(value: &T) -> Result<serde_json::Value> {
@@ -34,7 +34,7 @@ struct ValidatingSerializer<S>(S);
 
 impl<S: Serializer> ValidatingSerializer<S> {
     fn signed(value: i128) -> std::result::Result<(), S::Error> {
-        if (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value) {
+        if value.unsigned_abs() <= MAX_SAFE_INTEGER {
             Ok(())
         } else {
             Err(S::Error::custom(format!(
@@ -44,7 +44,7 @@ impl<S: Serializer> ValidatingSerializer<S> {
     }
 
     fn unsigned(value: u128) -> std::result::Result<(), S::Error> {
-        if value <= MAX_SAFE_INTEGER as u128 {
+        if value <= MAX_SAFE_INTEGER {
             Ok(())
         } else {
             Err(S::Error::custom(format!(

@@ -108,7 +108,7 @@ impl OperationTrace {
         self.span.enter()
     }
 
-    pub(crate) fn success(&self, metadata: &EventMetadata<'_>, _raw_json: Option<&str>) {
+    pub(crate) fn success(&self, metadata: &EventMetadata<'_>, raw_json: Option<&str>) {
         let elapsed_us = duration_us(self.start.elapsed());
         self.span.record("elapsed_us", elapsed_us);
         tracing::debug!(
@@ -148,9 +148,11 @@ impl OperationTrace {
                 model_present = ?metadata.model_present,
                 provider_generation_id_present = ?metadata.provider_generation_id_present,
                 estimated_cost_present = ?metadata.estimated_cost_present,
-                raw_json = _raw_json.unwrap_or(SENSITIVE_UNAVAILABLE),
+                raw_json = raw_json.unwrap_or(SENSITIVE_UNAVAILABLE),
             );
         }
+        #[cfg(not(feature = "sensitive-diagnostics"))]
+        let _ = raw_json;
     }
 
     pub(crate) fn failure(&self, metadata: &EventMetadata<'_>, error: &Error) {
