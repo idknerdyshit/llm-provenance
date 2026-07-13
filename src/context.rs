@@ -108,6 +108,7 @@ impl<'de> Deserialize<'de> for SchemaVersion {
 /// This type intentionally omits `Debug`: payloads commonly contain personal or
 /// commercially sensitive data and should not enter logs accidentally.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Context<T> {
     schema: SchemaId,
     schema_version: SchemaVersion,

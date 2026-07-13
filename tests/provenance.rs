@@ -147,6 +147,36 @@ fn typed_intent_envelopes_round_trip() {
 }
 
 #[test]
+fn intent_wire_formats_reject_unknown_fields() {
+    let context = digest("wire-format");
+    let request = llm_provenance::IntentRequest {
+        model: "provider/model".to_owned(),
+        prompt: VersionedPrompt::new("intent-classifier", 3).expect("prompt"),
+        context: context.clone(),
+        input: json!({"body": "wire-format"}),
+    };
+    let mut request_wire = serde_json::to_value(request).expect("request wire");
+    request_wire
+        .as_object_mut()
+        .expect("request object")
+        .insert("unexpected".to_owned(), json!(true));
+    assert!(serde_json::from_value::<llm_provenance::DynamicIntentRequest>(request_wire).is_err());
+
+    let response = llm_provenance::IntentResponse {
+        classification: json!({"label": "support"}),
+        provenance: provenance(context),
+    };
+    let mut response_wire = serde_json::to_value(response).expect("response wire");
+    response_wire
+        .as_object_mut()
+        .expect("response object")
+        .insert("unexpected".to_owned(), json!(true));
+    assert!(
+        serde_json::from_value::<llm_provenance::DynamicIntentResponse>(response_wire).is_err()
+    );
+}
+
+#[test]
 fn provenance_detects_context_changes_and_verifies_rebuilds() {
     let first = digest("first");
     let second = digest("second");

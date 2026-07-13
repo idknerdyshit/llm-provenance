@@ -5,10 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.0] - 2026-07-13
 
 ### Added
 
+- Typed and dynamic versioned context envelopes.
+- RFC 8785 canonical JSON with fail-closed I-JSON number validation.
+- Structured SHA-256 context digests with stable JSON and text encodings.
+- Audit-safe generation, cache, token, prompt, and monetary provenance types.
+- Generic typed and dynamic intent-classification envelopes.
 - Hash-bound context reconstruction manifests, exact-byte artifact commitments,
   and opaque evidence references.
 - Replay verification for rebuilt contexts and archived canonical preimages.
@@ -34,13 +39,3 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - Replace the unpublished pre-release `GenerationProvenance` shape with the
   strict versioned audit record and validated builder API.
-
-## [0.1.0] - 2026-07-10
-
-### Added
-
-- Typed and dynamic versioned context envelopes.
-- RFC 8785 canonical JSON with fail-closed I-JSON number validation.
-- Structured SHA-256 context digests with stable JSON and text encodings.
-- Audit-safe generation, cache, token, prompt, and monetary provenance types.
-- Generic typed and dynamic intent-classification envelopes.

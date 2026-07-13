@@ -462,6 +462,21 @@ fn archived_context_preimages_must_be_canonical() {
 }
 
 #[test]
+fn context_wire_format_rejects_unknown_fields() {
+    let context = Context::new(
+        schema("example.context-wire"),
+        version(1),
+        json!({"value": 1}),
+    );
+    let mut wire = serde_json::to_value(context).expect("wire value");
+    wire.as_object_mut()
+        .expect("context object")
+        .insert("unexpected".to_owned(), json!(true));
+
+    assert!(serde_json::from_value::<Context<serde_json::Value>>(wire).is_err());
+}
+
+#[test]
 fn manifested_payload_wire_format_rejects_unknown_fields() {
     let payload = ManifestedPayload::new(
         manifest("ticket body", "policy body", "git:abc"),

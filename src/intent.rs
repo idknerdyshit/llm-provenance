@@ -11,6 +11,7 @@ use crate::{Error, Result};
 /// This type intentionally omits `Debug` so classifier input cannot enter logs
 /// through routine diagnostic formatting.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntentRequest<T> {
     /// Provider/model identifier requested for classification.
     pub model: String,
@@ -28,6 +29,7 @@ pub struct IntentRequest<T> {
 /// Applications own the classification shape; this crate only couples it to
 /// generation provenance.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntentResponse<T> {
     /// Application-defined classification result.
     pub classification: T,
